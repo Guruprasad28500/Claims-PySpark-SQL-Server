@@ -51,12 +51,17 @@ Run control flags:
 - `RUN_BASIC` (default: `1`)
 - `RUN_WINDOW` (default: `1`)
 - `RUN_UDF` (default: `1`)
+- `RUN_QUALITY` (default: `1`) - runs data quality checks
 - `RUN_JOINS` (default: `1`)
 - `RUN_JOIN_DEMOS` (default: `1`)
 - `RUN_MULTIPLE_JOIN_ONLY` (default: `0`)
 - `RUN_PIVOT` (default: `1`)
 - `FAST_MODE` (default: `1`) - skips heavy count operations
 - `PREVIEW_ROWS` (default: `5`) - rows shown in previews
+
+Quality checks:
+
+- `ALLOWED_CLAIM_STATUSES` (default: `Approved,Pending,Rejected`) - valid status domain for quality validation
 
 Output/export:
 
@@ -88,3 +93,4 @@ $env:RUN_ALL_SEQUENCE='1'; $env:EXPORT_OUTPUTS='1'; $env:OUTPUT_DIR='C:/Users/Gu
 - If you run `python app.py` and see `ModuleNotFoundError: pyodbc`, you are likely using global Python instead of `.venv`.
 - Occasional Spark temp-folder cleanup warnings on Windows (`DiskBlockManager`) are usually non-fatal when exit code is `0`.
 - Refactored script functions in `app.py`: `run_basic_ops`, `run_window_ops`, `run_udf_ops`, `run_join_ops`, `export_outputs`.
+- Data quality function in `app.py`: `run_quality_checks` (nulls, duplicates, ranges, business rules, status-domain checks).
