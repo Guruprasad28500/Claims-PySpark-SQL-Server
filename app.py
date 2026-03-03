@@ -263,30 +263,67 @@ def run_udf_ops(df_base, preview_rows_count: int):
 def run_quality_checks(df_base, preview_rows_count: int):
     print("\n=== DATA QUALITY CHECKS ===\n")
 
+    def show_issue_rows(title: str, issue_df):
+        print(f"\n{title}")
+        issue_df.select(
+            "policy_id",
+            "policy_type",
+            "claim_amount",
+            "recovery_amount",
+            "premium",
+            "claim_status",
+            "net_claim",
+        ).show(preview_rows_count, truncate=False)
+
     required_columns = ["policy_id", "policy_type", "claim_amount", "recovery_amount", "claim_status", "premium"]
     for column_name in required_columns:
-        null_count = df_base.filter(col(column_name).isNull()).count()
+        null_rows_df = df_base.filter(col(column_name).isNull())
+        null_count = null_rows_df.count()
         print(f"Null check - {column_name}: {null_count}")
+        if null_count > 0:
+            show_issue_rows(f"Records with NULL in {column_name}:", null_rows_df)
 
-    duplicate_count = df_base.groupBy("policy_id").count().filter(col("count") > 1).count()
+    duplicate_policy_ids_df = df_base.groupBy("policy_id").count().filter(col("count") > 1)
+    duplicate_count = duplicate_policy_ids_df.count()
     print(f"Duplicate policy_id groups: {duplicate_count}")
+    if duplicate_count > 0:
+        duplicate_rows_df = df_base.join(duplicate_policy_ids_df.select("policy_id"), on="policy_id", how="inner")
+        show_issue_rows("Records with duplicate policy_id:", duplicate_rows_df)
 
-    negative_claim_count = df_base.filter(col("claim_amount") < 0).count()
-    negative_recovery_count = df_base.filter(col("recovery_amount") < 0).count()
-    invalid_premium_count = df_base.filter(col("premium") <= 0).count()
+    negative_claim_df = df_base.filter(col("claim_amount") < 0)
+    negative_claim_count = negative_claim_df.count()
+    negative_recovery_df = df_base.filter(col("recovery_amount") < 0)
+    negative_recovery_count = negative_recovery_df.count()
+    invalid_premium_df = df_base.filter(col("premium") <= 0)
+    invalid_premium_count = invalid_premium_df.count()
     print(f"Range check - claim_amount < 0: {negative_claim_count}")
     print(f"Range check - recovery_amount < 0: {negative_recovery_count}")
     print(f"Range check - premium <= 0: {invalid_premium_count}")
+    if negative_claim_count > 0:
+        show_issue_rows("Records with claim_amount < 0:", negative_claim_df)
+    if negative_recovery_count > 0:
+        show_issue_rows("Records with recovery_amount < 0:", negative_recovery_df)
+    if invalid_premium_count > 0:
+        show_issue_rows("Records with premium <= 0:", invalid_premium_df)
 
-    recovery_gt_claim_count = df_base.filter(col("recovery_amount") > col("claim_amount")).count()
+    recovery_gt_claim_df = df_base.filter(col("recovery_amount") > col("claim_amount"))
+    recovery_gt_claim_count = recovery_gt_claim_df.count()
     print(f"Business rule - recovery_amount > claim_amount: {recovery_gt_claim_count}")
+    if recovery_gt_claim_count > 0:
+        show_issue_rows("Records where recovery_amount > claim_amount:", recovery_gt_claim_df)
 
-    net_claim_mismatch = df_base.filter(sql_abs(col("net_claim") - (col("claim_amount") - col("recovery_amount"))) > 0.0001).count()
+    net_claim_mismatch_df = df_base.filter(sql_abs(col("net_claim") - (col("claim_amount") - col("recovery_amount"))) > 0.0001)
+    net_claim_mismatch = net_claim_mismatch_df.count()
     print(f"Consistency check - net_claim mismatch: {net_claim_mismatch}")
+    if net_claim_mismatch > 0:
+        show_issue_rows("Records with net_claim mismatch:", net_claim_mismatch_df)
 
     allowed_statuses = [status.strip() for status in os.getenv("ALLOWED_CLAIM_STATUSES", "Approved,Pending,Rejected").split(",") if status.strip()]
-    invalid_status_count = df_base.filter(~col("claim_status").isin(allowed_statuses)).count()
+    invalid_status_df = df_base.filter(~col("claim_status").isin(allowed_statuses))
+    invalid_status_count = invalid_status_df.count()
     print(f"Domain check - invalid claim_status: {invalid_status_count}")
+    if invalid_status_count > 0:
+        show_issue_rows("Records with invalid claim_status:", invalid_status_df)
 
     print("\nSample invalid rows (recovery > claim or invalid status):")
     df_base.filter((col("recovery_amount") > col("claim_amount")) | (~col("claim_status").isin(allowed_statuses))) \

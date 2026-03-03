@@ -94,3 +94,4 @@ $env:RUN_ALL_SEQUENCE='1'; $env:EXPORT_OUTPUTS='1'; $env:OUTPUT_DIR='C:/Users/Gu
 - Occasional Spark temp-folder cleanup warnings on Windows (`DiskBlockManager`) are usually non-fatal when exit code is `0`.
 - Refactored script functions in `app.py`: `run_basic_ops`, `run_window_ops`, `run_udf_ops`, `run_join_ops`, `export_outputs`.
 - Data quality function in `app.py`: `run_quality_checks` (nulls, duplicates, ranges, business rules, status-domain checks).
+- Quality checks now print both failed counts and sample issue records (including `policy_id`) per rule.
