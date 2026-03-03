@@ -2,14 +2,13 @@ import os
 from pathlib import Path
 import pyodbc
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col,sum,row_number,rank,dense_rank,lag,lead,avg as avg_func,udf,lit
+from pyspark.sql.functions import col,sum,row_number,rank,dense_rank,lag,lead,avg as avg_func,udf,lit,abs as sql_abs
 from pyspark.sql.window import Window
 from pyspark.sql.types import StringType, DoubleType
 
 
-# ---------------------------------------------------
-# 1️⃣  Path Setup
-# ---------------------------------------------------
+
+# 1️  Path Setup
 workspace_dir = Path(__file__).resolve().parent
 jdbc_jar = workspace_dir / "jars" / "mssql-jdbc-12.6.1.jre8.jar"
 auth_dll = workspace_dir / "jars" / "mssql-jdbc_auth-12.6.1.x64.dll"
@@ -25,9 +24,7 @@ auth_dir = str(auth_dll.parent)
 os.environ["PATH"] = auth_dir + os.pathsep + os.environ.get("PATH", "")
 spark_env_path = auth_dir + os.pathsep + os.environ.get("PATH", "")
 
-# ---------------------------------------------------
-# 2️⃣  Spark Session
-# ---------------------------------------------------
+# 2️  Spark Session
 spark_builder = SparkSession.builder.appName("SQLServerConnection")
 
 if sql_read_mode == "jdbc":
@@ -64,6 +61,7 @@ def env_int(name: str, default: str) -> int:
 
 run_window = env_flag("RUN_WINDOW", "1")
 run_udf = env_flag("RUN_UDF", "1")
+run_quality = env_flag("RUN_QUALITY", "1")
 run_joins = env_flag("RUN_JOINS", "1")
 run_join_demos = env_flag("RUN_JOIN_DEMOS", "1")
 run_multiple_join_only = env_flag("RUN_MULTIPLE_JOIN_ONLY", "0")
@@ -77,6 +75,7 @@ if run_all_sequence:
     run_basic = True
     run_window = True
     run_udf = True
+    run_quality = True
     run_joins = True
     run_join_demos = True
     run_pivot = True
@@ -86,12 +85,11 @@ if run_multiple_join_only:
     run_basic = False
     run_window = False
     run_udf = False
+    run_quality = False
     run_join_demos = False
     run_pivot = False
 
-# ---------------------------------------------------
-# 3️⃣  JDBC URL (Windows Auth)
-# ---------------------------------------------------
+# 3️  JDBC URL (Windows Auth)
 jdbc_url = (
     "jdbc:sqlserver://localhost:1433;"
     "databaseName=InsuranceDB;"
@@ -262,6 +260,42 @@ def run_udf_ops(df_base, preview_rows_count: int):
         .select("claim_amount", "recovery_amount", "net_claim", "policy_status").show(preview_rows_count)
 
 
+def run_quality_checks(df_base, preview_rows_count: int):
+    print("\n=== DATA QUALITY CHECKS ===\n")
+
+    required_columns = ["policy_id", "policy_type", "claim_amount", "recovery_amount", "claim_status", "premium"]
+    for column_name in required_columns:
+        null_count = df_base.filter(col(column_name).isNull()).count()
+        print(f"Null check - {column_name}: {null_count}")
+
+    duplicate_count = df_base.groupBy("policy_id").count().filter(col("count") > 1).count()
+    print(f"Duplicate policy_id groups: {duplicate_count}")
+
+    negative_claim_count = df_base.filter(col("claim_amount") < 0).count()
+    negative_recovery_count = df_base.filter(col("recovery_amount") < 0).count()
+    invalid_premium_count = df_base.filter(col("premium") <= 0).count()
+    print(f"Range check - claim_amount < 0: {negative_claim_count}")
+    print(f"Range check - recovery_amount < 0: {negative_recovery_count}")
+    print(f"Range check - premium <= 0: {invalid_premium_count}")
+
+    recovery_gt_claim_count = df_base.filter(col("recovery_amount") > col("claim_amount")).count()
+    print(f"Business rule - recovery_amount > claim_amount: {recovery_gt_claim_count}")
+
+    net_claim_mismatch = df_base.filter(sql_abs(col("net_claim") - (col("claim_amount") - col("recovery_amount"))) > 0.0001).count()
+    print(f"Consistency check - net_claim mismatch: {net_claim_mismatch}")
+
+    allowed_statuses = [status.strip() for status in os.getenv("ALLOWED_CLAIM_STATUSES", "Approved,Pending,Rejected").split(",") if status.strip()]
+    invalid_status_count = df_base.filter(~col("claim_status").isin(allowed_statuses)).count()
+    print(f"Domain check - invalid claim_status: {invalid_status_count}")
+
+    print("\nSample invalid rows (recovery > claim or invalid status):")
+    df_base.filter((col("recovery_amount") > col("claim_amount")) | (~col("claim_status").isin(allowed_statuses))) \
+        .select("policy_id", "policy_type", "claim_amount", "recovery_amount", "claim_status", "net_claim") \
+        .show(preview_rows_count, truncate=False)
+
+    print("\n=== DATA QUALITY CHECKS COMPLETE ===")
+
+
 def prepare_reference_tables(df_base):
     policy_rates_table = os.getenv("POLICY_RATES_TABLE", "dbo.PolicyRates")
     claim_handler_table = os.getenv("CLAIM_HANDLER_TABLE", "dbo.ClaimHandlers")
@@ -409,9 +443,7 @@ def export_outputs(joined_df_local, pivot_df_local):
         pivot_df_local.coalesce(1).write.mode("overwrite").parquet(pivot_path)
         print(f"Exported pivot output to: {pivot_path}")
 
-# ---------------------------------------------------
-# 4️⃣  Read Table
-# ---------------------------------------------------
+# 4️  Read Table
 if sql_read_mode == "jdbc":
     try:
         df = spark.read.jdbc(
@@ -432,9 +464,8 @@ df = df.withColumn(
     "net_claim",
     col("claim_amount") - col("recovery_amount")
 )
-# ---------------------------------------------------
-# 4️⃣  Read Table + Pipeline Execution
-# ---------------------------------------------------
+# 4️ Read Table + Pipeline Execution
+
 df = load_sql_table("dbo.Claims")
 df = df.withColumn("net_claim", col("claim_amount") - col("recovery_amount")).cache()
 
@@ -446,6 +477,9 @@ if run_window:
 
 if run_udf:
     run_udf_ops(df, preview_rows)
+
+if run_quality:
+    run_quality_checks(df, preview_rows)
 
 if run_joins:
     joined_df, pivot_df = run_join_ops(
