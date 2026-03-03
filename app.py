@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 import pyodbc
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col,sum,row_number,rank,dense_rank,lag,lead,avg as avg_func,udf,lit,abs as sql_abs
+from pyspark.sql.functions import col,sum,row_number,rank,dense_rank,lag,lead,avg as avg_func,udf,lit,abs as sql_abs,count,when,expr
 from pyspark.sql.window import Window
 from pyspark.sql.types import StringType, DoubleType
 
@@ -62,6 +62,7 @@ def env_int(name: str, default: str) -> int:
 run_window = env_flag("RUN_WINDOW", "1")
 run_udf = env_flag("RUN_UDF", "1")
 run_quality = env_flag("RUN_QUALITY", "1")
+run_profile = env_flag("RUN_PROFILE", "1")
 run_joins = env_flag("RUN_JOINS", "1")
 run_join_demos = env_flag("RUN_JOIN_DEMOS", "1")
 run_multiple_join_only = env_flag("RUN_MULTIPLE_JOIN_ONLY", "0")
@@ -69,6 +70,7 @@ run_pivot = env_flag("RUN_PIVOT", "1")
 run_basic = env_flag("RUN_BASIC", "1")
 fast_mode = env_flag("FAST_MODE", "1")
 preview_rows = env_int("PREVIEW_ROWS", "5")
+profile_top_n = env_int("PROFILE_TOP_N", "10")
 run_all_sequence = env_flag("RUN_ALL_SEQUENCE", "1")
 
 if run_all_sequence:
@@ -76,6 +78,7 @@ if run_all_sequence:
     run_window = True
     run_udf = True
     run_quality = True
+    run_profile = True
     run_joins = True
     run_join_demos = True
     run_pivot = True
@@ -86,6 +89,7 @@ if run_multiple_join_only:
     run_window = False
     run_udf = False
     run_quality = False
+    run_profile = False
     run_join_demos = False
     run_pivot = False
 
@@ -333,6 +337,33 @@ def run_quality_checks(df_base, preview_rows_count: int):
     print("\n=== DATA QUALITY CHECKS COMPLETE ===")
 
 
+def run_data_profiling(df_base, preview_rows_count: int, top_n: int):
+    print("\n=== DATA PROFILING ===\n")
+    print(f"Total rows: {df_base.count()}")
+    print("Schema:")
+    df_base.printSchema()
+
+    print("\nNull counts by column:")
+    null_exprs = [count(when(col(column_name).isNull(), 1)).alias(column_name) for column_name in df_base.columns]
+    df_base.select(*null_exprs).show(truncate=False)
+
+    print("\nDistinct counts by column:")
+    distinct_exprs = [expr(f"count(distinct `{column_name}`) as `{column_name}`") for column_name in df_base.columns]
+    df_base.select(*distinct_exprs).show(truncate=False)
+
+    numeric_cols = [name for name, dtype in df_base.dtypes if dtype in {"int", "bigint", "double", "float", "smallint", "tinyint"} or dtype.startswith("decimal")]
+    if numeric_cols:
+        print("\nNumeric summary:")
+        df_base.select(*numeric_cols).summary("count", "min", "25%", "50%", "75%", "max", "mean", "stddev").show(truncate=False)
+
+    for cat_col in ["policy_type", "claim_status", "customer_name"]:
+        if cat_col in df_base.columns:
+            print(f"\nTop {top_n} values for {cat_col}:")
+            df_base.groupBy(cat_col).count().orderBy(col("count").desc()).show(top_n, truncate=False)
+
+    print("\n=== DATA PROFILING COMPLETE ===")
+
+
 def prepare_reference_tables(df_base):
     policy_rates_table = os.getenv("POLICY_RATES_TABLE", "dbo.PolicyRates")
     claim_handler_table = os.getenv("CLAIM_HANDLER_TABLE", "dbo.ClaimHandlers")
@@ -480,27 +511,6 @@ def export_outputs(joined_df_local, pivot_df_local):
         pivot_df_local.coalesce(1).write.mode("overwrite").parquet(pivot_path)
         print(f"Exported pivot output to: {pivot_path}")
 
-# 4️  Read Table
-if sql_read_mode == "jdbc":
-    try:
-        df = spark.read.jdbc(
-            url=jdbc_url,
-            table="dbo.Claims",
-            properties=connection_properties
-        )
-    except Exception as exc:
-        if "integrated authentication" in str(exc).lower():
-            print("JDBC integrated auth failed; using ODBC Windows-auth fallback.")
-            df = load_with_odbc("dbo.Claims")
-        else:
-            raise
-else:
-    df = load_with_odbc("dbo.Claims")
-
-df = df.withColumn(
-    "net_claim",
-    col("claim_amount") - col("recovery_amount")
-)
 # 4️ Read Table + Pipeline Execution
 
 df = load_sql_table("dbo.Claims")
@@ -517,6 +527,9 @@ if run_udf:
 
 if run_quality:
     run_quality_checks(df, preview_rows)
+
+if run_profile:
+    run_data_profiling(df, preview_rows, profile_top_n)
 
 if run_joins:
     joined_df, pivot_df = run_join_ops(
